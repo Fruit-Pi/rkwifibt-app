@@ -98,7 +98,16 @@ static int _bt_close_server(void)
 		exec_command_system("hciconfig hci0 down");
 		if (kill_task("rtk_hciattach") < 0)
 			return -1;
+		sleep(1);
 	}
+
+	if (get_ps_pid("brcm_patchram_plus1")) {
+		exec_command_system("hciconfig hci0 down");
+		if (kill_task("brcm_patchram_plus1") < 0)
+			return -1;
+		sleep(1);
+	}
+
 
 	return 0;
 }
@@ -153,6 +162,7 @@ static int _bt_open_server()
 			pr_err("open bt server failed! error: brcm_patchram_plus1 failed!\n");
 			return -1;
 		}
+		sleep(1);
 	}
 
 #if 0
