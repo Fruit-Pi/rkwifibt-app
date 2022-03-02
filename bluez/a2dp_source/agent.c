@@ -210,18 +210,15 @@ static DBusMessage *request_confirmation(DBusConnection *conn,
 {
 	const char *device;
 	dbus_uint32_t passkey;
-	char *str;
 
 	bt_shell_printf("Request confirmation\n");
 
 	dbus_message_get_args(msg, NULL, DBUS_TYPE_OBJECT_PATH, &device,
 				DBUS_TYPE_UINT32, &passkey, DBUS_TYPE_INVALID);
 
-	str = g_strdup_printf("Confirm passkey %06u (yes/no):", passkey);
-	bt_shell_prompt_input("agent", str, confirm_response, conn);
-	g_free(str);
+	pr_info("Confirm passkey %06u\n", passkey);
 
-	pending_message = dbus_message_ref(msg);
+	g_dbus_send_reply(conn, msg, DBUS_TYPE_INVALID);
 
 	return NULL;
 }
@@ -236,10 +233,8 @@ static DBusMessage *request_authorization(DBusConnection *conn,
 	dbus_message_get_args(msg, NULL, DBUS_TYPE_OBJECT_PATH, &device,
 							DBUS_TYPE_INVALID);
 
-	bt_shell_prompt_input("agent", "Accept pairing (yes/no):",
-					confirm_response, conn);
-
-	pending_message = dbus_message_ref(msg);
+	pr_info("Accept pairing\n");
+	g_dbus_send_reply(conn, msg, DBUS_TYPE_INVALID);
 
 	return NULL;
 }
@@ -248,18 +243,14 @@ static DBusMessage *authorize_service(DBusConnection *conn,
 					DBusMessage *msg, void *user_data)
 {
 	const char *device, *uuid;
-	char *str;
 
 	bt_shell_printf("Authorize service\n");
 
 	dbus_message_get_args(msg, NULL, DBUS_TYPE_OBJECT_PATH, &device,
 				DBUS_TYPE_STRING, &uuid, DBUS_TYPE_INVALID);
 
-	str = g_strdup_printf("Authorize service %s (yes/no):", uuid);
-	bt_shell_prompt_input("agent", str, confirm_response, conn);
-	g_free(str);
-
-	pending_message = dbus_message_ref(msg);
+	pr_info("Authorize service %s \n", uuid);
+	g_dbus_send_reply(conn, msg, DBUS_TYPE_INVALID);
 
 	return NULL;
 }
@@ -339,6 +330,8 @@ void agent_register(DBusConnection *conn, GDBusProxy *manager,
 						const char *capability)
 
 {
+	bt_shell_printf("agent_register enter\n");
+
 	if (agent_registered == TRUE) {
 		bt_shell_printf("Agent is already registered\n");
 		return;

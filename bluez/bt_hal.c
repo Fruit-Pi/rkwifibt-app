@@ -1196,8 +1196,11 @@ static int main_loop_deinit()
 	return 0;
 }
 
-int rk_bt_init(RkBtContent *p_bt_content)
+static pthread_t rk_bt_init_thread = 0;
+static int _rk_bt_init(void *p)
 {
+	RkBtContent *p_bt_content = p;
+
 	if (bt_is_open()) {
 		pr_info("%s: bluetooth has been opened!\n", __func__);
 		return -1;
@@ -1218,8 +1221,25 @@ int rk_bt_init(RkBtContent *p_bt_content)
 	return 0;
 }
 
-int rk_bt_deinit()
+int rk_bt_init(RkBtContent *p_bt_content)
 {
+	if (rk_bt_init_thread)
+		return 0;
+
+	if (pthread_create(&rk_bt_init_thread, NULL, _rk_bt_init, (void *)p_bt_content)) {
+		pr_err("%s: Create rk_bt_init_thread thread failed\n", __func__);
+		return -1;
+	}
+
+	pthread_setname_np(rk_bt_init_thread, "rk_bt_init_thread");
+	pthread_detach(rk_bt_init_thread);
+	return 0;
+}
+
+int _rk_bt_deinit(void *p)
+{
+	rk_bt_init_thread = 0;
+
 	if (!bt_is_open()) {
 		pr_info("%s: bluetooth has been closed!\n", __func__);
 		return -1;
@@ -1245,6 +1265,7 @@ int rk_bt_deinit()
 	kill_task("bluetoothd");
 	exec_command_system("hciconfig hci0 down");
 	kill_task("rtk_hciattach");
+	kill_task("brcm_patchram_plus1");
 
 	main_loop_deinit();
 
@@ -1258,6 +1279,19 @@ int rk_bt_deinit()
 	bt_deregister_state_callback();
 	pr_info("exit %s\n", __func__);
 
+	return 0;
+}
+
+static pthread_t rk_bt_deinit_thread = 0;
+int rk_bt_deinit()
+{
+	if (pthread_create(&rk_bt_deinit_thread, NULL, _rk_bt_deinit, NULL)){
+		pr_err("%s: Create rk_bt_init_thread thread failed\n", __func__);
+		return -1;
+	}
+
+	pthread_setname_np(rk_bt_deinit_thread, "rk_bt_deinit_thread");
+	pthread_detach(rk_bt_deinit_thread);
 	return 0;
 }
 

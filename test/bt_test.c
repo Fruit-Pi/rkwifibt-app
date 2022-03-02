@@ -350,6 +350,8 @@ static pthread_t bt_init_thread = 0;
 void bt_test_bluetooth_init(char *data)
 {
 	printf("%s: ", __func__);
+	bt_test_bluetooth_init_thread(NULL);
+	return;
 
 	if (bt_init_thread) {
 		printf("bt init thread already exist\n");

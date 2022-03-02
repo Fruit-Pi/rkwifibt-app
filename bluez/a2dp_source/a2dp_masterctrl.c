@@ -1534,6 +1534,17 @@ static void property_changed(GDBusProxy *proxy, const char *name,
 		if (!strcmp(name, "Powered"))
 			adapter_changed(proxy, iter, user_data);
 
+		if (!strcmp(name, "Discovering")) {
+			dbus_bool_t val;
+			dbus_message_iter_get_basic(iter, &val);
+			pr_info("Adapter Discovering changed to %s", val ? "TRUE" : "FALSE");
+			if (!val) {
+				g_bt_scan_info.is_scaning = false;
+				filter_clear_transport();
+				bt_discovery_state_send(RK_BT_DISC_STOPPED_BY_USER);
+			}
+		}
+
 		print_iter(str, name, iter);
 		g_free(str);
 	} else if (!strcmp(interface, "org.bluez.LEAdvertisingManager1")) {
@@ -3402,6 +3413,7 @@ int bt_open(RkBtContent *bt_content)
 
 	BT_OPENED = 0;
 #ifdef DefGContext
+	//_bluetooth_open(bt_content);
 	g_idle_add(_bluetooth_open, bt_content);
 #else
 	GSource *source;
@@ -3450,6 +3462,7 @@ void bt_close()
 
 	BT_CLOSED = 0;
 #ifdef DefGContext
+	//_bluetooth_close(NULL);
 	g_idle_add(_bluetooth_close, NULL);
 #else
 	GSource *source;
@@ -3460,13 +3473,6 @@ void bt_close()
 	g_source_attach (source, Bluez_Context);
 	g_source_unref (source);
 #endif
-
-	while (confirm_cnt--) {
-		if (BT_CLOSED)
-			return 0;
-
-		usleep(50 * 1000);
-	}
 }
 
 static int a2dp_master_get_rssi(GDBusProxy *proxy)
@@ -4239,21 +4245,25 @@ RkBtScanedDevice *bt_create_one_scaned_dev(GDBusProxy *proxy)
 		dbus_message_iter_get_basic(&iter, &address);
 	else
 		address = "<unknown>";
+	pr_info("	addr: %s\n", address);
 
 	if (g_dbus_proxy_get_property(proxy, "Alias", &iter))
 		dbus_message_iter_get_basic(&iter, &name);
 	else
 		name = "<unknown>";
+	pr_info("	name: %s\n", name);
 
 	if (g_dbus_proxy_get_property(proxy, "Connected", &iter))
 		dbus_message_iter_get_basic(&iter, &is_connected);
 	else
 		pr_info("%s: Can't get connected status\n", __func__);
+	pr_info("	Connected: %d\n", is_connected);
 
 	if(g_dbus_proxy_get_property(proxy, "Class", &iter))
 		dbus_message_iter_get_basic(&iter, &cod);
 	else
 		pr_info("%s: Can't get class of device\n", __func__);
+	pr_info("	Class: 0x%x\n", cod);
 
 	new_device->remote_address = (char *)malloc(strlen(address) + 1);
 	if(!new_device->remote_address) {
@@ -4525,78 +4535,6 @@ int bt_get_default_dev_addr(char *addr_buf, int addr_len)
 	return bt_get_device_addr_by_proxy(default_dev, addr_buf, addr_len);
 }
 
-static int bluez_cancel_scan(RK_BT_DISCOVERY_STATE state)
-{
-	int wait_cnt = 50;
-
-	pr_info("%s thread tid = %lu\n", __func__, pthread_self());
-
-	g_bt_scan_info.is_scaning = false;
-	source_set_reconnect_tag(false);
-
-	//scan on, then immediately scan off, will result in org.bluez.Error.InProgress
-	if (!bt_is_discovering()) {
-		pr_info("%s: check discovering\n", __func__);
-		msleep(200);
-	}
-
-	pr_info("=== %s scan off ===\n", __func__);
-	cmd_scan("off");
-
-check_stop_scan:
-	if (bt_is_discovering() && wait_cnt) {
-		pr_info("%s: Wait stop scan(%d)...\n",  __func__, wait_cnt);
-		wait_cnt--;
-		msleep(100);
-		goto check_stop_scan;
-	}
-
-	if (!bt_is_discovering()) {
-		g_bt_scan_info.scan_time = 0;
-		g_bt_scan_info.scan_type = SCAN_TYPE_AUTO;
-		filter_clear_transport();
-		bt_discovery_state_send(state);
-		return 0;
-	} else {
-		g_bt_scan_info.is_scaning = true;
-		pr_info("%s: scan off failed\n", __func__);
-		return -1;
-	}
-}
-
-static void *bt_scan_devices(void *arg)
-{
-	unsigned int scan_time = 0;
-
-	pr_info("%s thread tid = %lu\n", __func__, pthread_self());
-
-	pr_info("=== scan on ===\n");
-	exec_command_system("hciconfig hci0 noscan");
-	if(cmd_scan("on") < 0) {
-		bt_discovery_state_send(RK_BT_DISC_START_FAILED);
-		goto done;
-	}
-
-	while(g_bt_scan_info.is_scaning) {
-		usleep(500 * 1000);
-		scan_time += 500;
-		if(scan_time >= g_bt_scan_info.scan_time) {
-			pr_info("%s: the scan is complete\n", __func__);
-			break;
-		}
-	}
-
-	bluez_cancel_scan(RK_BT_DISC_STOPPED_AUTO);
-
-done:
-	//no connected device so enable piscan
-	if (default_dev == NULL)
-		exec_command_system("hciconfig hci0 piscan");
-	pr_info("%s: Exit bt scan thread\n", __func__);
-	g_bt_scan_info.scan_thread = 0;
-	return NULL;
-}
-
 static void reomve_unpaired_device ()
 {
 	GDBusProxy *proxy;
@@ -4699,34 +4637,21 @@ int bt_start_discovery(unsigned int mseconds, RK_BT_SCAN_TYPE scan_type)
 {
 	int ret;
 
-	if(bt_is_scaning()) {
+	if (bt_is_scaning()) {
 		pr_info("%s: devices discovering\n", __func__);
 		return -1;
 	}
 
 	g_bt_scan_info.is_scaning = true;
-	g_bt_scan_info.scan_off_failed = false;
+	g_bt_scan_info.scan_type = scan_type;
+
 	reomve_unpaired_device();
 
-	if (mseconds < 1000) {
-		pr_info("%s: %d ms is too short, scan time is changed to 2s.\n", __func__, mseconds);
-		g_bt_scan_info.scan_time = 2000;
-	} else {
-		pr_info("%s: scan time: %d\n", __func__, mseconds);
-		g_bt_scan_info.scan_time = mseconds;
-	}
-
-	g_bt_scan_info.scan_type = scan_type;
-	ret = pthread_create(&g_bt_scan_info.scan_thread, NULL, bt_scan_devices, NULL);
-	if (ret) {
-		pr_info("%s: scan thread create failed!\n", __func__);
+	pr_info("=== scan on ===\n");
+	//exec_command_system("hciconfig hci0 noscan");
+	if(cmd_scan("on") < 0) {
 		bt_discovery_state_send(RK_BT_DISC_START_FAILED);
-		return -1;
 	}
-
-	pthread_setname_np(g_bt_scan_info.scan_thread, "scan_thread");
-	pthread_detach(g_bt_scan_info.scan_thread);
-	pr_info("%s scan_thread tid: %u\n", __func__, g_bt_scan_info.scan_thread);
 
 	return 0;
 }
@@ -4742,45 +4667,9 @@ int bt_cancel_discovery(RK_BT_DISCOVERY_STATE state)
 
 	pr_info("%s thread tid = %lu\n", __func__, pthread_self());
 
-	g_bt_scan_info.is_scaning = false;
-
-	//wait bt_scan_devices exit
-	while (wait_cnt--) {
-		if (g_bt_scan_info.scan_thread == false)
-			break;
-		msleep(100);
-		pr_info("%s wait scan off ...\n", __func__);
-	}
-
-	if (g_bt_scan_info.scan_thread) {
-		pr_info("%s scan_thread fail\n", __func__);
-		return -1;
-	}
-
 	if (bt_is_discovering()) {
 		pr_info("=== %s scan off again===\n", __func__);
 		cmd_scan("off");
-		wait_cnt = 50;
-
-check_stop_scan:
-		if (bt_is_discovering() && wait_cnt) {
-			pr_info("%s: Wait stop scan(%d)...\n",  __func__, wait_cnt);
-			wait_cnt--;
-			msleep(100);
-			goto check_stop_scan;
-		}
-
-		if (!bt_is_discovering()) {
-			g_bt_scan_info.scan_time = 0;
-			g_bt_scan_info.scan_type = SCAN_TYPE_AUTO;
-			filter_clear_transport();
-			bt_discovery_state_send(state);
-			return 0;
-		} else {
-			g_bt_scan_info.is_scaning = true;
-			pr_info("%s: failed\n", __func__);
-			return -1;
-		}
 	}
 
 	return 0;
